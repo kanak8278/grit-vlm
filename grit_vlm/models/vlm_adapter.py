@@ -346,7 +346,10 @@ class VLMGRITAdapter:
                 self.cross_activations.pop(0)
         
         # Update Fisher matrices in individual layers
+        print(f"\u2699\ufe0f  GRIT updating {len(self.grit_layers)} layers...")
         for layer_name, grit_layer in self.grit_layers.items():
+            modality = self._get_layer_modality(layer_name)
+            print(f"    \ud83d\udcca {modality} layer: {layer_name.split('.')[-2:]}")
             grit_layer.update_fisher_and_projection()
     
     def get_mixed_modal_projections(self) -> Dict[str, Any]:

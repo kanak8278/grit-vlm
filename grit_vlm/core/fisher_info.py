@@ -102,14 +102,23 @@ class FisherInformationMatrix:
         self.step_count += 1
         
         if self.step_count % self.update_freq != 0:
+            print(f"  📊 Fisher step {self.step_count}/{self.update_freq} - accumulating (no update yet)")
             return
+        
+        print(f"🔥 FISHER UPDATE at step {self.step_count}! Running {self.approximation_type.value} Fisher computation...")
             
         if self.approximation_type == FisherApproximationType.DIAGONAL:
+            print(f"  🎯 Computing Diagonal Fisher Information...")
             self._update_diagonal_fisher(model, gradients)
+            print(f"  ✅ Diagonal Fisher updated")
         elif self.approximation_type == FisherApproximationType.KFAC:
+            print(f"  🧠 Computing K-FAC Fisher Information...")
             self._update_kfac_fisher(model, activations)
+            print(f"  ✅ K-FAC Fisher updated")
         elif self.approximation_type == FisherApproximationType.BLOCK_DIAGONAL:
+            print(f"  🔲 Computing Block-Diagonal Fisher Information...")
             self._update_block_diagonal_fisher(model, gradients)
+            print(f"  ✅ Block-Diagonal Fisher updated")
     
     def _update_diagonal_fisher(
         self, 

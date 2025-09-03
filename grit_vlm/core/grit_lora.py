@@ -207,7 +207,9 @@ class GRITLoRALayer(nn.Module):
         
         # Update projection matrix if enabled
         if self.config.enable_projection:
+            print(f"    \ud83d\udd04 Updating projection matrix for {self.adapter_name}...")
             self._update_projection_matrix()
+            print(f"    \u2705 Projection matrix updated")
         
         # Clear activation buffer to prevent memory leak
         self.activation_buffer = self.activation_buffer[-10:]  # Keep only recent ones
