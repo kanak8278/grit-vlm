@@ -8,16 +8,17 @@ architectures with separate treatment for vision, text, and cross-modal componen
 import torch
 import torch.nn as nn
 from typing import Dict, List, Optional, Tuple, Union, Any
-from transformers import (
-    AutoModel, AutoProcessor, AutoModelForCausalLM,
-    LlavaForConditionalGeneration, Qwen2VLForConditionalGeneration
-)
+from transformers import AutoModelForCausalLM
 from peft import get_peft_model, LoraConfig, TaskType
 import warnings
 
 from ..core.grit_lora import GRITLoRALayer, GRITLoRAConfig, create_grit_lora_layer
 from ..core.fisher_info import FisherInformationMatrix, FisherApproximationType
 from ..utils.projection import MultiModalProjector, ProjectionScheduler, create_linear_scheduler
+from ..config.model_configs import (
+    ModelGRITConfig, ModalityConfig, get_model_config, filter_layers_by_strategy,
+    LayerSelectionStrategy
+)
 
 
 class VLMGRITAdapter:
@@ -33,7 +34,8 @@ class VLMGRITAdapter:
     def __init__(
         self,
         model: nn.Module,
-        config: GRITLoRAConfig,
+        config: Union[GRITLoRAConfig, ModelGRITConfig],
+        model_config_name: Optional[str] = None,
         vision_layers: Optional[List[str]] = None,
         text_layers: Optional[List[str]] = None,
         cross_modal_layers: Optional[List[str]] = None
@@ -43,15 +45,40 @@ class VLMGRITAdapter:
         
         Args:
             model: The VLM model to adapt
-            config: GRIT-LoRA configuration
-            vision_layers: Names of vision encoder layers to adapt
-            text_layers: Names of text decoder layers to adapt
-            cross_modal_layers: Names of cross-modal layers to adapt
+            config: GRIT-LoRA configuration or ModelGRITConfig
+            model_config_name: Name of predefined model config (e.g., 'smolvlm_fast')
+            vision_layers: Names of vision encoder layers to adapt (overrides config)
+            text_layers: Names of text decoder layers to adapt (overrides config)
+            cross_modal_layers: Names of cross-modal layers to adapt (overrides config)
         """
         self.model = model
-        self.config = config
         
-        # Default layer configurations for different VLM architectures
+        # Handle different config types
+        if isinstance(config, ModelGRITConfig):
+            self.model_config = config
+            # Convert ModelGRITConfig to GRITLoRAConfig for backward compatibility
+            self.config = self._convert_to_grit_lora_config(config)
+        else:
+            self.config = config
+            # Try to get model config from model name or explicit name
+            if model_config_name:
+                self.model_config = get_model_config(model_config_name)
+            else:
+                # Try to infer from model class name
+                model_name = getattr(model, '_name_or_path', str(type(model).__name__))
+                self.model_config = get_model_config(model_name)
+        
+        # Get layer configurations
+        if self.model_config:
+            # Use model-specific configuration with layer selection strategies
+            if vision_layers is None and self.model_config.vision:
+                vision_layers = self._get_layers_from_config(self.model_config.vision, "vision")
+            if text_layers is None and self.model_config.text:
+                text_layers = self._get_layers_from_config(self.model_config.text, "text")
+            if cross_modal_layers is None and self.model_config.cross_modal:
+                cross_modal_layers = self._get_layers_from_config(self.model_config.cross_modal, "cross_modal")
+        
+        # Fallback to default layer configurations
         if vision_layers is None:
             vision_layers = self._get_default_vision_layers()
         if text_layers is None:
@@ -89,16 +116,83 @@ class VLMGRITAdapter:
         self.text_activations: List[torch.Tensor] = []
         self.cross_activations: List[torch.Tensor] = []
     
+    def _convert_to_grit_lora_config(self, model_config: ModelGRITConfig) -> GRITLoRAConfig:
+        """Convert ModelGRITConfig to GRITLoRAConfig for backward compatibility."""
+        # Use global settings from model config
+        return GRITLoRAConfig(
+            r=model_config.global_rank,
+            lora_alpha=model_config.global_alpha,
+            lora_dropout=model_config.global_dropout,
+            fisher_damping=model_config.fisher_damping,
+            fisher_ema_decay=model_config.fisher_ema_decay,
+            fisher_update_freq=model_config.fisher_update_freq,
+            projection_budget_start=model_config.projection_budget_start,
+            projection_budget_end=model_config.projection_budget_end,
+            projection_schedule=model_config.projection_schedule
+        )
+    
+    def _get_layers_from_config(self, modality_config: ModalityConfig, modality_name: str) -> List[str]:
+        """Get filtered layer names from modality configuration."""
+        # Get all matching layers for this modality
+        all_matching_layers = []
+        
+        for pattern in modality_config.layer_patterns:
+            # Convert pattern to regex and find matching layers
+            matching_layers = self._find_layers_by_pattern(pattern)
+            all_matching_layers.extend(matching_layers)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_layers = []
+        for layer in all_matching_layers:
+            if layer not in seen:
+                seen.add(layer)
+                unique_layers.append(layer)
+        
+        # Apply selection strategy
+        filtered_layers = filter_layers_by_strategy(
+            unique_layers,
+            modality_config.strategy,
+            n_layers=modality_config.n_layers,
+            step_size=modality_config.step_size,
+            specific_indices=modality_config.specific_indices
+        )
+        
+        # Apply performance limit if set
+        if self.model_config and self.model_config.max_layers_per_modality:
+            max_layers = self.model_config.max_layers_per_modality
+            if len(filtered_layers) > max_layers:
+                print(f"⚠️  Limiting {modality_name} layers to {max_layers} (was {len(filtered_layers)}) for performance")
+                filtered_layers = filtered_layers[:max_layers]
+        
+        return filtered_layers
+    
+    def _find_layers_by_pattern(self, pattern: str) -> List[str]:
+        """Find layer names matching a pattern (supports * wildcards)."""
+        import re
+        
+        # Convert glob pattern to regex
+        regex_pattern = pattern.replace('*', '[^.]*')  # * matches any characters except dots
+        regex_pattern = f"^{regex_pattern}$"
+        
+        matching_layers = []
+        for name, module in self.model.named_modules():
+            if isinstance(module, nn.Linear) and re.match(regex_pattern, name):
+                matching_layers.append(name)
+        
+        return matching_layers
+
     def _get_default_vision_layers(self) -> List[str]:
         """Get default vision layer names based on model architecture."""
         model_name = self.model.__class__.__name__.lower()
         
-        if "llava" in model_name:
+        if "idefics3" in model_name:
+            # SmolVLM and other Idefics3 models
             return [
-                "vision_tower.vision_model.encoder.layers.*.self_attn.q_proj",
-                "vision_tower.vision_model.encoder.layers.*.self_attn.k_proj", 
-                "vision_tower.vision_model.encoder.layers.*.self_attn.v_proj",
-                "vision_tower.vision_model.encoder.layers.*.self_attn.out_proj"
+                "model.vision_model.encoder.layers.*.self_attn.q_proj",
+                "model.vision_model.encoder.layers.*.self_attn.k_proj",
+                "model.vision_model.encoder.layers.*.self_attn.v_proj", 
+                "model.vision_model.encoder.layers.*.self_attn.out_proj"
             ]
         elif "qwen2vl" in model_name:
             return [
@@ -123,24 +217,45 @@ class VLMGRITAdapter:
             ]
     
     def _get_default_text_layers(self) -> List[str]:
-        """Get default text layer names."""
-        return [
-            "language_model.model.layers.*.self_attn.q_proj",
-            "language_model.model.layers.*.self_attn.k_proj",
-            "language_model.model.layers.*.self_attn.v_proj", 
-            "language_model.model.layers.*.self_attn.o_proj",
-            "language_model.model.layers.*.mlp.gate_proj",
-            "language_model.model.layers.*.mlp.up_proj",
-            "language_model.model.layers.*.mlp.down_proj"
-        ]
+        """Get default text layer names based on model architecture."""
+        model_name = self.model.__class__.__name__.lower()
+        
+        if "idefics3" in model_name:
+            # SmolVLM and other Idefics3 models 
+            return [
+                "model.text_model.layers.*.self_attn.q_proj",
+                "model.text_model.layers.*.self_attn.k_proj",
+                "model.text_model.layers.*.self_attn.v_proj",
+                "model.text_model.layers.*.self_attn.o_proj"
+            ]
+        else:
+            # Generic text model patterns
+            return [
+                "language_model.model.layers.*.self_attn.q_proj",
+                "language_model.model.layers.*.self_attn.k_proj",
+                "language_model.model.layers.*.self_attn.v_proj", 
+                "language_model.model.layers.*.self_attn.o_proj",
+                "language_model.model.layers.*.mlp.gate_proj",
+                "language_model.model.layers.*.mlp.up_proj",
+                "language_model.model.layers.*.mlp.down_proj"
+            ]
     
     def _get_default_cross_modal_layers(self) -> List[str]:
-        """Get default cross-modal layer names."""
-        return [
-            "multi_modal_projector.*",
-            "*.cross_attn.*",
-            "*.vision_language_connector.*"
-        ]
+        """Get default cross-modal layer names based on model architecture."""
+        model_name = self.model.__class__.__name__.lower()
+        
+        if "idefics3" in model_name:
+            # SmolVLM and other Idefics3 models
+            return [
+                "model.connector.modality_projection.proj"
+            ]
+        else:
+            # Generic cross-modal patterns
+            return [
+                "multi_modal_projector.*",
+                "*.cross_attn.*",
+                "*.vision_language_connector.*"
+            ]
     
     def _apply_grit_adaptations(self):
         """Apply GRIT-LoRA adaptations to target layers."""
@@ -356,20 +471,10 @@ def create_vlm_grit_adapter(
     
     # Load base model
     try:
-        # Try common VLM model classes
-        if "llava" in model_name_or_path.lower():
-            model = LlavaForConditionalGeneration.from_pretrained(
-                model_name_or_path, **model_kwargs
-            )
-        elif "qwen2-vl" in model_name_or_path.lower():
-            model = Qwen2VLForConditionalGeneration.from_pretrained(
-                model_name_or_path, **model_kwargs
-            )
-        else:
-            # Generic loading
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name_or_path, **model_kwargs
-            )
+        # Generic model loading
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path, **model_kwargs
+        )
     except Exception as e:
         raise ValueError(f"Failed to load model {model_name_or_path}: {e}")
     
@@ -379,62 +484,5 @@ def create_vlm_grit_adapter(
     return model, grit_adapter
 
 
-# Specialized adapters for specific VLM architectures
-class LLaVAGRITAdapter(VLMGRITAdapter):
-    """Specialized GRIT adapter for LLaVA models."""
-    
-    def _get_default_vision_layers(self) -> List[str]:
-        return [
-            "vision_tower.vision_model.encoder.layers.*.self_attn.q_proj",
-            "vision_tower.vision_model.encoder.layers.*.self_attn.k_proj",
-            "vision_tower.vision_model.encoder.layers.*.self_attn.v_proj",
-            "vision_tower.vision_model.encoder.layers.*.self_attn.out_proj"
-        ]
-    
-    def _get_default_text_layers(self) -> List[str]:
-        return [
-            "language_model.model.layers.*.self_attn.q_proj",
-            "language_model.model.layers.*.self_attn.k_proj", 
-            "language_model.model.layers.*.self_attn.v_proj",
-            "language_model.model.layers.*.self_attn.o_proj"
-        ]
-    
-    def _get_default_cross_modal_layers(self) -> List[str]:
-        return [
-            "multi_modal_projector.linear_1",
-            "multi_modal_projector.linear_2"
-        ]
-
-
-class Qwen2VLGRITAdapter(VLMGRITAdapter):
-    """Specialized GRIT adapter for Qwen2-VL models."""
-    
-    def _get_default_vision_layers(self) -> List[str]:
-        return [
-            "visual.blocks.*.attn.q",
-            "visual.blocks.*.attn.k", 
-            "visual.blocks.*.attn.v",
-            "visual.blocks.*.attn.proj"
-        ]
-    
-    def _get_default_cross_modal_layers(self) -> List[str]:
-        return [
-            "visual.merger.ln_q",
-            "visual.merger.ln_kv"
-        ]
-
-
-# Factory function for architecture-specific adapters
-def create_architecture_specific_adapter(
-    model: nn.Module,
-    config: GRITLoRAConfig
-) -> VLMGRITAdapter:
-    """Create architecture-specific GRIT adapter."""
-    model_name = model.__class__.__name__.lower()
-    
-    if "llava" in model_name:
-        return LLaVAGRITAdapter(model, config)
-    elif "qwen2vl" in model_name:
-        return Qwen2VLGRITAdapter(model, config)
-    else:
-        return VLMGRITAdapter(model, config)
+# Note: Specialized adapters for other VLM architectures can be added here
+# when tested and validated with the configuration system

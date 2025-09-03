@@ -82,9 +82,16 @@ class GRITLoRALayer(nn.Module):
         else:
             raise ValueError(f"Unsupported layer type: {type(base_layer)}")
         
-        # Initialize LoRA matrices
-        self.lora_A = nn.Parameter(torch.randn(config.r, self.in_features) * 0.01)
-        self.lora_B = nn.Parameter(torch.zeros(self.out_features, config.r))
+        # Initialize LoRA matrices with same dtype and device as base layer
+        device = next(base_layer.parameters()).device
+        dtype = next(base_layer.parameters()).dtype
+        
+        self.lora_A = nn.Parameter(
+            torch.randn(config.r, self.in_features, device=device, dtype=dtype) * 0.01
+        )
+        self.lora_B = nn.Parameter(
+            torch.zeros(self.out_features, config.r, device=device, dtype=dtype)
+        )
         
         # Scaling factor
         self.scaling = config.lora_alpha / config.r
