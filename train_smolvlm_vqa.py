@@ -16,6 +16,23 @@ from PIL import Image
 import warnings
 warnings.filterwarnings("ignore")
 
+def custom_collate_fn(batch):
+    """Custom collate function to handle variable-sized pixel values."""
+    # Separate the different components
+    input_ids = torch.stack([item["input_ids"] for item in batch])
+    attention_mask = torch.stack([item["attention_mask"] for item in batch])
+    labels = torch.stack([item["labels"] for item in batch])
+    
+    # Handle pixel values - just return as list since they have different shapes
+    pixel_values = [item["pixel_values"] for item in batch]
+    
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+        "pixel_values": pixel_values
+    }
+
 from grit_vlm import GRITLoRAConfig
 from grit_vlm.models.vlm_adapter import VLMGRITAdapter
 from grit_vlm.config import get_device_config
@@ -23,7 +40,7 @@ from grit_vlm.config import get_device_config
 class OKVQADataset(torch.utils.data.Dataset):
     """OK-VQA dataset for VQA training."""
     
-    def __init__(self, dataset, processor, max_length=512):
+    def __init__(self, dataset, processor, max_length=1200):
         self.dataset = dataset
         self.processor = processor
         self.max_length = max_length
@@ -42,8 +59,9 @@ class OKVQADataset(torch.utils.data.Dataset):
         # Use first answer as target (OK-VQA has multiple valid answers)
         target_answer = answers[0] if answers else "unknown"
         
-        # Format for SmolVLM: "Question: {question}\nAnswer: {answer}"
-        text_input = f"Question: {question}\nAnswer:"
+        # Format for SmolVLM with image placeholder
+        text_input = f"<image>Question: {question}\nAnswer:"
+        # For labels, we don't need the image token
         text_target = f"Question: {question}\nAnswer: {target_answer}"
         
         # Process inputs
@@ -154,7 +172,7 @@ def main():
     
     # 4. Load OK-VQA dataset (small subset for testing)
     print("\n📚 Loading OK-VQA dataset...")
-    dataset = load_dataset("lmms-lab/OK-VQA", split="train")
+    dataset = load_dataset("lmms-lab/OK-VQA", split="val2014")
     
     # Use small subset for testing
     small_dataset = dataset.select(range(min(200, len(dataset))))
@@ -164,7 +182,7 @@ def main():
     train_dataset = OKVQADataset(small_dataset, processor)
     train_loader = DataLoader(
         train_dataset, 
-        batch_size=2,  # Small batch size for testing
+        batch_size=1,  # Use batch size 1 to avoid tensor shape issues
         shuffle=True
     )
     
@@ -174,7 +192,7 @@ def main():
     # 7. Training loop
     print(f"\n🏋️ Starting training...")
     print(f"Dataset size: {len(train_dataset)}")
-    print(f"Batch size: 2")
+    print(f"Batch size: 1")
     print(f"GRIT layers: {len(adapter.grit_layers)}")
     
     try:
