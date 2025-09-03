@@ -1,0 +1,17 @@
+[project]
+name = "grit-vlm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=4.0.0",
+    "matplotlib>=3.10.5",
+    "peft>=0.17.0",
+    "scipy>=1.16.1",
+    "seaborn>=0.13.2",
+    "torchaudio>=2.8.0",
+    "torchvision>=0.23.0",
+    "transformers>=4.55.0",
+    "wandb>=0.21.0",
+]
