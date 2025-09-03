@@ -322,4 +322,108 @@ adapter = VLMGRITAdapter(
 # Result: 20+ layers, maximum quality, slower training
 ```
 
+## Device Configuration
+
+The GRIT configuration system includes intelligent device selection for CUDA, MPS, and CPU:
+
+### Automatic Device Selection
+
+```python
+from grit_vlm.config import get_device_config
+
+# Optimized for different scenarios
+training_config = get_device_config("stable_training")    # CPU for stable training
+inference_config = get_device_config("auto_inference")    # GPU for fast inference
+memory_config = get_device_config("memory_efficient")     # Memory optimized
+
+# Use with model loading
+model = Idefics3ForConditionalGeneration.from_pretrained(
+    "HuggingFaceTB/SmolVLM-256M-Instruct",
+    **training_config  # Automatically selects best device + settings
+)
+```
+
+### Device Strategies
+
+| Strategy | Use Case | Device Priority | Description |
+|----------|----------|-----------------|-------------|
+| `stable_training` | Training/Fine-tuning | CPU → CUDA → MPS | Most stable gradients |
+| `auto_inference` | Inference only | CUDA → MPS → CPU | Fastest inference |
+| `auto_performance` | General use | CUDA → MPS → CPU | Best overall performance |
+| `memory_efficient` | Limited memory | CUDA (limited) → CPU | Memory optimized |
+
+### Device-Specific Optimizations
+
+**CUDA (NVIDIA GPU):**
+- ✅ Best for training (fast backward passes)
+- ✅ Best for inference (fastest overall)
+- ✅ Memory management with limits
+- ✅ Float16 support
+
+**MPS (Apple Silicon):**
+- ✅ Good for inference (1.7x faster than CPU)
+- ⚠️ Slower for training (backward passes)
+- ✅ Float16 support
+- ⚠️ Less predictable memory
+
+**CPU:**
+- ✅ Most stable for training
+- ✅ Predictable memory usage
+- ✅ Always available
+- ❌ Slowest option
+
+### Integrated Usage
+
+```python
+# Combine model config + device config
+from grit_vlm.config import get_model_config, get_device_config
+
+# Get optimal device settings
+device_kwargs = get_device_config("stable_training")
+
+# Load model with device optimization
+model = Idefics3ForConditionalGeneration.from_pretrained(
+    "HuggingFaceTB/SmolVLM-256M-Instruct",
+    **device_kwargs
+)
+
+# Apply GRIT with model-specific config
+adapter = VLMGRITAdapter(
+    model=model,
+    config=GRITLoRAConfig(),
+    model_config_name="smolvlm_fast"  # Layer selection strategy
+)
+```
+
+### Performance Recommendations
+
+Based on your hardware:
+
+**🚀 CUDA Available:**
+```python
+# Training
+device_kwargs = get_device_config("stable_training")  # Usually selects CUDA
+adapter = VLMGRITAdapter(model, config, model_config_name="smolvlm_256m")
+
+# Inference  
+device_kwargs = get_device_config("auto_inference")   # Selects CUDA
+```
+
+**🍎 MPS Available (Mac):**
+```python
+# Training (CPU more stable)
+device_kwargs = get_device_config("stable_training")  # Selects CPU
+adapter = VLMGRITAdapter(model, config, model_config_name="smolvlm_fast")
+
+# Inference (MPS faster)
+device_kwargs = get_device_config("auto_inference")   # Selects MPS
+```
+
+**💻 CPU Only:**
+```python
+# All scenarios
+device_kwargs = get_device_config("memory_efficient") # Optimized CPU settings
+adapter = VLMGRITAdapter(model, config, model_config_name="smolvlm_fast")
+```
+
 This configuration system gives you complete control over GRIT adaptations while providing sensible defaults for common use cases.

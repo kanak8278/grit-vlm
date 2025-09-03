@@ -73,7 +73,6 @@ class GRITLoRALayer(nn.Module):
         # GRIT-specific components
         self.fisher_matrix = FisherInformationMatrix(...)
         self.activation_buffer = []  # Stores layer inputs for Fisher computation
-        self.gradient_buffer = []    # Stores gradients for Fisher computation
         
         # Projection components (advanced feature)
         self.projection_matrix = None  # Top-k eigenvectors of Fisher
@@ -99,9 +98,9 @@ def forward_hook(module, input, output):
     self.activation_buffer.append(activation)
 
 def backward_hook(module, grad_input, grad_output):
-    # Save output gradients for Fisher computation  
-    grad = grad_output[0].detach()
-    self.gradient_buffer.append(grad)
+    # Currently unused - Fisher computation uses parameter gradients directly
+    # from PyTorch autograd (lora_A.grad, lora_B.grad)
+    pass
 ```
 
 ### 3. The Magic: Natural Gradients
@@ -143,7 +142,7 @@ def forward(self, x):
 During forward/backward, hooks automatically save:
 
 - **Activations**: What went into the layer (`self.activation_buffer`)
-- **Gradients**: How much each weight should change (`self.gradient_buffer`)
+- **Parameter Gradients**: Computed directly by PyTorch autograd (`lora_A.grad`, `lora_B.grad`)
 
 ### Step 3: Update Fisher Matrix (every N steps)
 
@@ -153,8 +152,9 @@ def update_fisher_and_projection(self):
         # Compute Fisher approximation from recent activations/gradients
         if self.fisher_matrix.approximation_type == "diagonal":
             # Diagonal: F[i] = E[gradient[i]²]
-            recent_grads = torch.stack(self.gradient_buffer[-10:])
-            fisher_update = (recent_grads ** 2).mean(dim=0)
+            # Use parameter gradients directly from PyTorch autograd  
+            grad_vector = torch.cat([self.lora_A.grad.flatten(), self.lora_B.grad.flatten()])
+            fisher_update = grad_vector ** 2
             
             # Exponential moving average update
             if self.fisher_matrix.fisher_diagonal is None:
@@ -354,7 +354,8 @@ def test_grit_lora_basic():
     
     # Verify natural gradients are computed
     assert grit_layer.fisher_matrix.fisher_diagonal is not None
-    assert len(grit_layer.gradient_buffer) > 0
+    assert grit_layer.lora_A.grad is not None
+    assert grit_layer.lora_B.grad is not None
 ```
 
 ## 🚀 Why This Is Better Than Regular LoRA

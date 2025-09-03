@@ -110,9 +110,8 @@ class GRITLoRALayer(nn.Module):
         # Initialize Fisher for this layer
         self._initialize_fisher()
         
-        # Activation and gradient buffers for Fisher computation
+        # Activation buffer for Fisher computation
         self.activation_buffer: List[torch.Tensor] = []
-        self.gradient_buffer: List[torch.Tensor] = []
         self.step_count = 0
         
         # Projection components
@@ -146,13 +145,10 @@ class GRITLoRALayer(nn.Module):
                 self.activation_buffer.append(activation)
         
         def backward_hook(module, grad_input, grad_output):
-            """Capture gradients for Fisher computation."""
-            if grad_output[0] is not None:
-                grad = grad_output[0].detach()
-                
-                # Store gradient (limit buffer size)  
-                if len(self.gradient_buffer) < 100:
-                    self.gradient_buffer.append(grad)
+            """Hook for potential future gradient capture (currently unused)."""
+            # Currently not capturing gradients as Fisher computation
+            # uses parameter gradients directly from autograd
+            pass
         
         # Register hooks
         self.register_forward_hook(forward_hook)
@@ -213,9 +209,8 @@ class GRITLoRALayer(nn.Module):
         if self.config.enable_projection:
             self._update_projection_matrix()
         
-        # Clear buffers to prevent memory leak
+        # Clear activation buffer to prevent memory leak
         self.activation_buffer = self.activation_buffer[-10:]  # Keep only recent ones
-        self.gradient_buffer = self.gradient_buffer[-10:]
     
     def _update_projection_matrix(self):
         """Update projection matrix based on Fisher eigendecomposition."""
