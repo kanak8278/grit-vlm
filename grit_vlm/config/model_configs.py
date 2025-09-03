@@ -80,7 +80,7 @@ class ModelGRITConfig:
     # Fisher settings
     fisher_damping: float = 1e-4
     fisher_ema_decay: float = 0.95
-    fisher_update_freq: int = 10
+    fisher_update_freq: int = 5
 
     # Projection settings
     projection_budget_start: int = 32

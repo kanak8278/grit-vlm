@@ -125,12 +125,10 @@ def train_epoch(model, adapter, dataloader, optimizer, device):
         
         optimizer.step()
         
-        if batch_idx % 10 == 0:
+        if batch_idx % 1 == 0:
             print(f"Batch {batch_idx}, Loss: {loss.item():.4f}")
         
-        # Quick test with small dataset
-        if batch_idx >= 5:  # Limit to 5 batches for testing the fix
-            break
+        # Run full training - removed early break for complete Fisher updates
     
     return total_loss / min(len(dataloader), 51)
 
