@@ -16,12 +16,6 @@ class FisherInformationMatrix:
     # Like measuring "if I change this weight by X, how much does my loss change?"
 ```
 
-**Three ways to build the map**:
-
-- **Diagonal**: Fast but simple - treats each parameter independently  
-- **K-FAC**: Smarter - groups related parameters (like all weights in a layer)
-- **Block-diagonal**: Middle ground between speed and accuracy
-
 **How it works**:
 
 1. During training, it watches the gradients (how much loss wants to change each weight)
@@ -360,7 +354,7 @@ def test_grit_lora_basic():
 
 ## 🚀 Why This Is Better Than Regular LoRA
 
-### Regular LoRA:
+### Regular LoRA
 
 - Treats all parameters equally
 - Updates in Euclidean space (ignores geometry)
@@ -372,7 +366,7 @@ for param in lora_params:
     param.data -= learning_rate * param.grad
 ```
 
-### Your GRIT:
+### Your GRIT
 
 - Identifies important vs unimportant parameters (Fisher Information)
 - Updates in curved space (follows natural geometry)
@@ -516,3 +510,112 @@ Your implementation is essentially **LoRA with a GPS system** - it knows exactly
 - **VLM optimization**: Specialized handling of multimodal complexity
 
 The mathematical foundation ensures that each update is optimally aligned with the geometry of your specific learning problem, rather than making uniform steps in all directions like regular optimization methods.
+
+# Fisher Approximation
+
+## 1. Diagonal Approximation
+
+**Mathematical Formula**: `F_ii ≈ (∂log p/∂θᵢ)²`
+
+**How it's calculated**:
+
+```python
+# Step 1: Get gradients for each parameter
+gradients = {name: param.grad for name, param in model.named_parameters()}
+
+# Step 2: Flatten all gradients into one vector
+grad_vector = torch.cat([grad.flatten() for grad in gradients.values()])
+
+# Step 3: Square each gradient element (empirical Fisher)
+empirical_fisher = grad_vector ** 2
+
+# Step 4: Update with exponential moving average
+fisher_diagonal = ema_decay * old_fisher + (1 - ema_decay) * empirical_fisher
+```
+
+**What this means**: Each parameter's Fisher value is just the square of its gradient, ignoring all correlations.
+
+## 2. K-FAC (Kronecker-Factored)
+
+**Mathematical Formula**: `F ≈ A ⊗ G` (Kronecker product of two smaller matrices)
+
+**How it's calculated**:
+
+```python
+# For a Linear layer: weight W has shape [out_features, in_features]
+
+# Step 1: Store activations (input to layer) during forward pass
+activation_with_bias = [activation, ones_column]  # Add bias term
+
+# Step 2: Compute A factor (input covariance)
+A_factor = activation_with_bias.T @ activation_with_bias / batch_size
+
+# Step 3: Compute G factor (gradient covariance)
+G_factor = grad_output @ grad_output.T / batch_size
+
+# Step 4: Update both factors with EMA
+A_factor = ema_decay * old_A + (1 - ema_decay) * A_factor
+G_factor = ema_decay * old_G + (1 - ema_decay) * G_factor
+
+# The full Fisher is: F = G ⊗ A (Kronecker product)
+```
+
+**What this means**: Instead of storing a huge Fisher matrix, we store two smaller matrices whose Kronecker product approximates the full Fisher.
+
+## 3. Block-Diagonal
+
+**Mathematical Formula**: `F ≈ block_diag(F₁, F₂, ..., Fₙ)` where each `Fᵢ` is per-layer
+
+**How it's calculated**:
+
+```python
+# For each module/layer separately
+
+# Step 1: Collect gradients for all parameters in this module
+module_grads = [weight.grad.flatten(), bias.grad.flatten()]
+grad_vector = torch.cat(module_grads)  # Flatten into one vector per module
+
+# Step 2: Compute outer product (full Fisher for this block)
+empirical_block = torch.outer(grad_vector, grad_vector)
+
+# Step 3: Update with EMA
+fisher_blocks[module_name] = (
+    ema_decay * old_block + (1 - ema_decay) * empirical_block
+)
+```
+
+---
+
+## Fisher Approximation Methods - What We're Actually Doing
+
+### 1. Diagonal Approximation
+
+**What we're doing**: Taking each parameter's gradient, squaring it, and saying "this parameter's importance is proportional to how much it changed in this update."
+
+**The logic**: If a parameter had a big gradient, it's probably important for the loss, so we should be more careful when updating it.
+
+**Reality**: We're ignoring how parameters interact with each other - treating each weight/bias as completely independent.
+
+### 2. K-FAC (Kronecker-Factored)
+
+**What we're doing**: Separating each layer into two parts - "how the inputs correlate" (A factor) and "how the outputs correlate" (G factor), then combining them mathematically.
+
+**The logic**: In a linear layer `output = input @ weight`, the Fisher matrix has a specific structure that can be decomposed. Instead of storing a huge matrix, we store two smaller matrices whose mathematical combination gives us the full picture.
+
+**Reality**: We're capturing the layer's structure (input patterns × output patterns) while keeping computation manageable.
+
+### 3. Block-Diagonal
+
+**What we're doing**: For each layer, we're computing how all the parameters in that layer correlate with each other, but assuming different layers don't affect each other.
+
+**The logic**: Parameters within a layer (like all the weights in one linear layer) probably interact, but parameters from different layers are independent.
+
+**Reality**: We're computing full correlation matrices per layer, which captures intra-layer parameter relationships while keeping the computation tractable by ignoring cross-layer interactions.
+
+---
+
+## Summary in One Sentence Each:
+
+- **Diagonal**: "Each parameter matters independently based on its gradient size"
+- **K-FAC**: "Layer structure matters - separate input and output correlations, then combine them"
+- **Block-Diagonal**: "Parameters within each layer interact, but layers are independent"

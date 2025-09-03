@@ -53,6 +53,11 @@ class OKVQADataset(torch.utils.data.Dataset):
         
         # Get image and question
         image = item['image']
+        
+        # Resize image to fixed size to ensure consistent patch counts
+        # This prevents tensor shape mismatches in GRIT Fisher computation
+        image = image.resize((512, 512), Image.LANCZOS)
+        
         question = item['question']
         answers = item['answers']  # List of possible answers
         
@@ -124,7 +129,7 @@ def train_epoch(model, adapter, dataloader, optimizer, device):
             print(f"Batch {batch_idx}, Loss: {loss.item():.4f}")
         
         # Quick test with small dataset
-        if batch_idx >= 50:  # Limit to 50 batches for testing
+        if batch_idx >= 5:  # Limit to 5 batches for testing the fix
             break
     
     return total_loss / min(len(dataloader), 51)
@@ -182,7 +187,7 @@ def main():
     train_dataset = OKVQADataset(small_dataset, processor)
     train_loader = DataLoader(
         train_dataset, 
-        batch_size=1,  # Use batch size 1 to avoid tensor shape issues
+        batch_size=2,  # Can use larger batch size now that images are consistently sized
         shuffle=True
     )
     
@@ -192,7 +197,7 @@ def main():
     # 7. Training loop
     print(f"\n🏋️ Starting training...")
     print(f"Dataset size: {len(train_dataset)}")
-    print(f"Batch size: 1")
+    print(f"Batch size: 2")
     print(f"GRIT layers: {len(adapter.grit_layers)}")
     
     try:
